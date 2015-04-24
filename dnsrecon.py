@@ -219,7 +219,6 @@ def expand_cidr(cidr_to_expand):
     Function to expand a given CIDR and return an Array of IP Addresses that
     form the range covered by the CIDR.
     """
-    ip_list = []
     c1 = IPNetwork(cidr_to_expand)
     return c1
 
@@ -253,18 +252,18 @@ def check_wildcard(res, domain_trg):
     """
     Function for checking if Wildcard resolution is configured for a Domain
     """
-    wildcard = None
+    wildcards = None
     test_name = ''.join(Random().sample(string.hexdigits + string.digits,
                                         12)) + '.' + domain_trg
     ips = res.get_a(test_name)
 
     if len(ips) > 0:
         print_debug('Wildcard resolution is enabled on this domain')
-        print_debug('It is resolving to {0}'.format(''.join(ips[0][2])))
+        print_debug('It is resolving to {0}'.format(', '.join([ip[2] for ip in ips])))
         print_debug("All queries will resolve to this address!!")
-        wildcard = ''.join(ips[0][2])
+        wildcards = ips
 
-    return wildcard
+    return wildcards
 
 
 def brute_tlds(res, domain, verbose=False):
@@ -438,8 +437,8 @@ def brute_domain(res, dict, dom, filter=None, verbose=False, ignore_wildcard=Fal
     continue_brt = 'y'
 
     # Check if wildcard resolution is enabled
-    wildcard_ip = check_wildcard(res, dom)
-    if wildcard_ip and not ignore_wildcard:
+    wildcard_ips = check_wildcard(res, dom)
+    if wildcard_ips and not ignore_wildcard:
         print_status('Do you wish to continue? y/n ')
         continue_brt = str(sys.stdin.readline()[:-1])
     if re.search(r'y', continue_brt, re.I):
@@ -467,18 +466,43 @@ def brute_domain(res, dict, dom, filter=None, verbose=False, ignore_wildcard=Fal
             for rcd in rcd_found:
                 if re.search(r'^A', rcd[0]):
                     # Filter Records if filtering was enabled
-                    if filter:
-                        if not wildcard_ip == rcd[2]:
+                    if filter and wildcard_ips:
+                        filtered = False
+                        for wildcard_ip in wildcard_ips:
+                            if re.search(r'^A', wildcard_ip[0]) and wildcard_ip[2] == rcd[2]:
+                                filtered = True
+                                break
+                        if not filtered:
                             found_hosts.extend([{'type': rcd[0], 'name': rcd[1], 'address': rcd[2]}])
                     else:
                         found_hosts.extend([{'type': rcd[0], 'name': rcd[1], 'address': rcd[2]}])
                 elif re.search(r'^CNAME', rcd[0]):
-                    found_hosts.extend([{'type': rcd[0], 'name': rcd[1], 'target': rcd[2]}])
+                    if filter and wildcard_ips:
+                        filtered = False
+                        for wildcard_ip in wildcard_ips:
+                            if re.search(r'^CNAME', wildcard_ip[0]) and wildcard_ip[2] == rcd[2]:
+                                filtered = True
+                                break
+                        if not filtered:
+                            found_hosts.extend([{'type': rcd[0], 'name': rcd[1], 'target': rcd[2]}])
+                    else:
+                        found_hosts.extend([{'type': rcd[0], 'name': rcd[1], 'target': rcd[2]}])
 
         # Clear Global variable
         brtdata = []
 
+    # Make records unique
+    if wildcard_ips:
+        print wildcard_ips
+        for wildcard_ip in wildcard_ips:
+            if wildcard_ip[0].startswith('CNAME'):
+                print wildcard_ip
+                found_hosts.extend([{'type': 'WILDCARD_' + wildcard_ip[0], 'name': wildcard_ip[1], 'target': wildcard_ip[2]}])
+            elif re.search(r'^A', wildcard_ip[0]):
+                found_hosts.extend([{'type': 'WILDCARD_' + wildcard_ip[0], 'name': wildcard_ip[1], 'address': wildcard_ip[2]}])
+    # found_hosts = [x for i, x in enumerate(found_hosts) if found_hosts.index(x) == i]
     print_good("{0} Records Found".format(len(found_hosts)))
+    print found_hosts
     return found_hosts
 
 
@@ -722,7 +746,7 @@ def make_csv(data):
     for n in data:
         # make sure that we are working with a dictionary.
         if isinstance(n, dict):
-            if re.search(r'PTR|^[A]$|AAAA', n['type']):
+            if re.search(r'PTR|^[A]$|AAAA|WILDCARD_A', n['type']):
                 csv_data += n['type'] + "," + n['name'] + "," + n['address'] + "\n"
 
             elif re.search(r'NS$', n['type']):
@@ -781,11 +805,9 @@ def write_db(db, data):
     con.isolation_level = None
     cur = con.cursor()
 
-
     # Normalize the dictionary data
     for n in data:
-
-        if re.match(r'PTR|^[A]$|AAAA', n['type']):
+        if re.match(r'PTR|^[A]$|AAAA|WILDCARD_A', n['type']):
             query = 'insert into data( type, name, address ) ' + \
                     'values( "%(type)s", "%(name)s","%(address)s" )' % n
 
